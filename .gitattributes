@@ -1,0 +1,7 @@
+# 줄바꿈을 저장소에서 LF로 고정 (Windows CRLF 경고 방지)
+* text=auto eol=lf
+
+# Windows 전용 스크립트가 아니므로 바이너리 취급할 파일은 없음
+*.png binary
+*.jpg binary
+*.webm binary

@@ -1,0 +1,20 @@
+# 패치 전 원본 백업은 커밋하지 않는다.
+# 남의 번들 코드를 그대로 재배포하지 않기 위해서다.
+# 되돌리기는 patch_dsh_pet_ko.py --revert 또는 dsh-pet 재설치로 한다.
+backup/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 편집기 / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 로그
+*.log
