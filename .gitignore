@@ -18,3 +18,6 @@ desktop.ini
 
 # 로그
 *.log
+
+# 임시 확인용 / Windows ACL 복구 기록
+.acl-recovery/

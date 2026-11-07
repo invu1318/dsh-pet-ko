@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""dsh-pet 한국어 패치 검증기 (임시 실행용 사본)."""
+"""dsh-pet 한국어 패치 검증기.
+
+메뉴 라벨 패치(웹/데스크톱/트레이)와 설정·대화 UI 로케일 패치를 함께 검증한다.
+"""
 import io, json, os, re, sys, urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+LOCALE_KO_PATH = os.path.join(HERE, "pet_locale_ko.json")
 
 PET_ROOT = os.path.join(os.environ.get("DSH_HOME", os.path.expanduser(r"~\.dsh")),
                         "profiles", "desktop", "node_modules", "dsh-pet")
@@ -43,6 +49,77 @@ def required_names(cfg):
     need.update((cfg.get("memes") or {}).keys())
     return {n for n in need if n}
 
+def read_ko_table(src, var):
+    """번들에 주입된 한국어 사전 리터럴을 JSON으로 읽는다."""
+    start = src.index("const %s = " % var)
+    i = start + len("const %s = " % var)
+    depth = 0
+    while i < len(src):
+        c = src[i]
+        if c == '"':
+            i += 1
+            while i < len(src) and src[i] != '"':
+                i += 2 if src[i] == "\\" else 1
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    return json.loads(src[start + len("const %s = " % var):i + 1])
+
+
+def verify_locale():
+    """설정·대화 UI 로케일 패치 검증. 문제 수를 돌려준다."""
+    problems = 0
+    src = io.open(CLIENT, encoding="utf-8").read()
+
+    if "// ---- dsh-pet ko locale patch" not in src:
+        print("\n[locale] NOT PATCHED")
+        return 1
+
+    ref = json.load(io.open(LOCALE_KO_PATH, encoding="utf-8"))
+    for ns, var in (("pet.config", "__DSH_PET_KO_PET_CONFIG__"),
+                    ("pet.chat", "__DSH_PET_KO_PET_CHAT__")):
+        if src.count("const %s = {" % var) != 1:
+            print("\n[locale] %s 선언을 찾을 수 없음" % var); problems += 1; continue
+        if src.count("ko: %s" % var) != 1:
+            print("\n[locale] %s 가 사전 표에 연결되지 않음" % var); problems += 1
+
+        table = read_ko_table(src, var)
+        shipped = ref[ns]
+        missing = [k for k in shipped if k not in table]
+        extra = [k for k in table if k not in shipped]
+        hanja = [(k, v) for k, v in table.items() if HAN.search(v)]
+        badph = []
+        for k, v in shipped.items():
+            a = sorted(re.findall(r"\{(\w+)\}", v))
+            b = sorted(re.findall(r"\{(\w+)\}", table.get(k, "")))
+            if a != b:
+                badph.append((k, a, b))
+        print("\n[locale] %s: %d 키 (누락 %d, 초과 %d, 한자 %d, 플레이스홀더 %d)"
+              % (ns, len(table), len(missing), len(extra), len(hanja), len(badph)))
+        for k in missing[:5]: print("   - missing %s" % k)
+        for k in extra[:5]: print("   + extra %s" % k)
+        for k, v in hanja[:5]: print("   ! 한자 %s -> %s" % (k, v[:60]))
+        for k, a, b in badph[:5]: print("   ! %s 플레이스홀더 %s != %s" % (k, a, b))
+        problems += len(missing) + len(extra) + len(hanja) + len(badph)
+
+    # t()를 우회하는 하드코딩 중문이 남아 있는지.
+    # zh 원본 사전(다른 언어용 정상 데이터)과 주입 사전 본문은 제외한다.
+    stripped = re.sub(r"const __DSH_PET_KO_[A-Z_]+__ = \{.*?\n\};", "", src, flags=re.S)
+    stripped = re.sub(r"//#region src/client/(settings|chat)/locales/.*?//#endregion",
+                      "", stripped, flags=re.S)
+    leftovers = [s for s in ("上传失败", "测试通知", "系统通知已就绪",
+                             "浏览器不支持缩放这张图")
+                 if s in stripped]
+    if leftovers:
+        print("\n[locale] 하드코딩 중문 잔존: %s" % ", ".join(leftovers))
+        problems += len(leftovers)
+    return problems
+
+
 def main():
     dicts = {}
     for label, path in (("client", CLIENT), ("shared-core", SHARED)):
@@ -58,7 +135,6 @@ def main():
             cfg = json.loads(r.read().decode("utf-8")).get("main", {})
         live = True
     except Exception:
-        import json as _j
         cfg = {"animations": {}, "memes": {}}
         live = False
     need = required_names(cfg)
@@ -71,8 +147,12 @@ def main():
     dirty = [(k, v) for k, v in dicts["client"].items() if HAN.search(v)]
     print("values with Han: %d" % len(dirty))
     for k, v in dirty: print("   ! %s -> %s" % (k, v))
-    ok = not missing and not dirty
-    print("\nRESULT:", "OK — 메뉴 라벨이 전부 한국어입니다" if ok else "확인 필요")
+
+    locale_problems = verify_locale()
+
+    ok = not missing and not dirty and locale_problems == 0
+    print("\nRESULT:", "OK — 메뉴 라벨과 설정·대화 UI가 모두 한국어입니다"
+          if ok else "확인 필요")
     return 0 if ok else 1
 
 if __name__ == "__main__":

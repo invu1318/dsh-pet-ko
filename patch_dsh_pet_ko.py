@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
-"""dsh-pet Korean menu patch.
+"""dsh-pet Korean patch (right-click menu + settings/chat UI).
 
-dsh-pet's right-click menu labels are hardcoded in the bundles (not localized),
-duplicated across the web bundle (client.js) and the desktop helper
-(shared-core.js). This script injects a translator at the single menu-label
-render chokepoint in both bundles and translates display labels only.
+Two independent problems, two separate patches:
 
-Safety: label is display-only. Animations resolve by node.anim and memes by
-node.image (original names), so translating labels cannot break playback.
+1. Menu labels are hardcoded in the bundles (not localized), duplicated across
+   the web bundle (client.js) and the desktop helper (shared-core.js). The
+   script injects a translator at the single menu-label render chokepoint in
+   both bundles and translates display labels only.
+
+2. The settings tab and the pet chat panel go through ctx.locale dictionaries,
+   but dsh-pet registers only zh/en/ja/es/fr/de/ru/pt for the `pet.config` and
+   `pet.chat` namespaces, so a Korean locale falls back to English. The script
+   adds a `ko` dictionary to both namespaces and translates the handful of
+   Chinese strings that bypass t().
+
+Safety: menu labels are display-only (animations resolve by node.anim and memes
+by node.image, the original names), so translating labels cannot break
+playback. The locale patch only adds dictionaries: it never edits another
+language's entries, and dsh-pet's own t() call sites are untouched.
 
     python patch_dsh_pet_ko.py --check
     python patch_dsh_pet_ko.py
@@ -19,6 +29,9 @@ import io
 import json
 import os
 import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+LOCALE_KO_PATH = os.path.join(HERE, "pet_locale_ko.json")
 
 PET_ROOT = os.path.join(
     os.environ.get("DSH_HOME", os.path.expanduser(r"~\.dsh")),
@@ -317,6 +330,149 @@ def revert_tray(path: str) -> str:
     return "REVERTED"
 
 
+# --------------------------------------------------------------------------
+# Locale patch: add a `ko` dictionary to dsh-pet's pet.config / pet.chat
+# namespaces, and translate the settings strings that bypass t().
+# --------------------------------------------------------------------------
+
+LOCALE_MARKER = "// ---- dsh-pet ko locale patch"
+
+# namespace -> (dict table as shipped, the constant that immediately precedes it)
+# The dictionary block is injected before the `const NS...` line so the table can
+# reference it without a temporal-dead-zone error.
+LOCALE_NAMESPACES = {
+    "pet.config": (
+        'const dicts$1 = {\n\tzh: zh$1,\n\ten: en$1,\n\tja: ja$1,\n\tes: es$1,\n\tfr: fr$1,\n\tde: de$1,\n\tru: ru$1,\n\tpt: pt$1\n};',
+        'const NS$1 = "pet.config";',
+    ),
+    "pet.chat": (
+        'const dicts = {\n\tzh,\n\ten,\n\tja,\n\tes,\n\tfr,\n\tde,\n\tru,\n\tpt\n};',
+        'const NS = "pet.chat";',
+    ),
+}
+
+# Hardcoded Chinese strings in the settings UI that never reach t().
+# (needle, replacement) -- each needle must occur exactly once in client.js.
+HARDCODED = [
+    # avatar upload errors (thrown/shown verbatim)
+    ('throw new Error("浏览器不支持缩放这张图")',
+     'throw new Error("이 브라우저에서는 이 이미지를 축소할 수 없습니다")'),
+    ('"上传失败（HTTP " + res.status + "）"',
+     '"업로드 실패(HTTP " + res.status + ")"'),
+    ('raw.message : "上传失败"',
+     'raw.message : "업로드 실패"'),
+    # test notification (OS toast, never passes through t())
+    ('new Notification("测试通知", {',
+     'new Notification("알림 테스트", {'),
+    ('body: "【dsh-pet】系统通知已就绪。"',
+     'body: "[dsh-pet] 시스템 알림이 준비되었습니다."'),
+    # separators: Korean uses ", " and ": ", not the CJK ideographic ones
+    ('result.failed.join("、")',
+     'result.failed.join(", ")'),
+    ('? "：" + result.message',
+     '? ": " + result.message'),
+    ('children: t(key) + "：" + value + suffix',
+     'children: t(key) + ": " + value + suffix'),
+    # voice picker label: `name（tag）`
+    ('`${option.name}（${option.tag}）`',
+     '`${option.name} (${option.tag})`'),
+]
+
+
+def ko_var(ns: str) -> str:
+    return "__DSH_PET_KO_%s__" % ns.replace(".", "_").upper()
+
+
+def marker_for(ns: str) -> str:
+    return "%s (%s) ----" % (LOCALE_MARKER, ns)
+
+
+def build_locale_block(ns: str) -> str:
+    with io.open(LOCALE_KO_PATH, "r", encoding="utf-8") as fh:
+        ko = json.load(fh)
+    body = json.dumps(ko[ns], ensure_ascii=False, indent=1)
+    lines = [
+        marker_for(ns),
+        "// dsh-pet ships zh/en/ja/es/fr/de/ru/pt for this namespace, so a Korean",
+        "// locale fell back to English. Display-only: no key or code path changes.",
+        "const %s = %s;" % (ko_var(ns), body),
+    ]
+    return "\n".join(lines)
+
+
+def patch_locale(path: str, check_only: bool) -> str:
+    if not os.path.exists(path):
+        return "MISSING"
+    if not os.path.exists(LOCALE_KO_PATH):
+        return "NO-DICT-FILE"
+    with io.open(path, "r", encoding="utf-8", newline="") as fh:
+        src = fh.read()
+    if LOCALE_MARKER in src:
+        return "ALREADY-PATCHED"
+
+    crlf = "\r\n" if "\r\n" in src else "\n"
+    # every anchor must exist exactly once
+    for ns, (table, const_line) in LOCALE_NAMESPACES.items():
+        if src.count(table.replace("\n", crlf)) != 1:
+            return "ANCHOR-MISS:%s=%d" % (ns, src.count(table.replace("\n", crlf)))
+        if src.count(const_line) != 1:
+            return "ANCHOR-MISS:%s.const=%d" % (ns, src.count(const_line))
+    for needle, _repl in HARDCODED:
+        if src.count(needle) != 1:
+            return "HARDCODED-MISS:%d" % src.count(needle)
+
+    if check_only:
+        return "WOULD-PATCH(ns=%d,hardcoded=%d)" % (len(LOCALE_NAMESPACES), len(HARDCODED))
+
+    for ns, (table, const_line) in LOCALE_NAMESPACES.items():
+        block = build_locale_block(ns).replace("\n", crlf)
+        src = src.replace(const_line, block + crlf + const_line, 1)
+        # extend the shipped table with the Korean entry (the last entry has no
+        # trailing comma, so the new row must start with one)
+        table_now = table.replace("\n", crlf)
+        extended = table_now.replace(
+            crlf + "};", "," + crlf + "\tko: " + ko_var(ns) + crlf + "};")
+        src = src.replace(table_now, extended, 1)
+
+    for needle, repl in HARDCODED:
+        src = src.replace(needle, repl)
+
+    with io.open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(src)
+    return "PATCHED"
+
+
+def revert_locale(path: str) -> str:
+    if not os.path.exists(path):
+        return "MISSING"
+    with io.open(path, "r", encoding="utf-8", newline="") as fh:
+        src = fh.read()
+    if LOCALE_MARKER not in src:
+        return "NOT-PATCHED"
+
+    crlf = "\r\n" if "\r\n" in src else "\n"
+    for ns, (table, const_line) in LOCALE_NAMESPACES.items():
+        # remove the injected comment + const declaration, up to the const line
+        start_marker = marker_for(ns)
+        if start_marker not in src:
+            continue
+        start = src.index(start_marker)
+        end = src.index(const_line, start)
+        src = src[:start] + src[end:]
+        # drop the ko entry from the table
+        table_now = table.replace("\n", crlf)
+        extended = table_now.replace(
+            crlf + "};", "," + crlf + "\tko: " + ko_var(ns) + crlf + "};")
+        src = src.replace(extended, table_now, 1)
+
+    for needle, repl in HARDCODED:
+        src = src.replace(repl, needle)
+
+    with io.open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(src)
+    return "REVERTED"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
@@ -336,8 +492,16 @@ def main() -> int:
         print("%-12s %s" % (name, res))
         if res.startswith(("MISSING", "ANCHOR-MISS", "NO-LABEL", "NO-TRAY")):
             rc = 1
+
+    # settings/chat dictionaries live in the web bundle only
+    path = TARGETS["client"]
+    res = revert_locale(path) if args.revert else patch_locale(path, args.check)
+    print("%-12s %s" % ("locale", res))
+    if res.startswith(("MISSING", "ANCHOR-MISS", "HARDCODED-MISS", "NO-DICT-FILE")):
+        rc = 1
     return rc
 
 
 if __name__ == "__main__":
     sys.exit(main())
+
