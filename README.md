@@ -56,6 +56,23 @@ CJK 구분자 `、`·`：`, 날씨 버블의 `体感`·`湿度`·`风速`·`观�
 | 도시명 | 首尔特别市 · 韩国 | 서울특별시 |
 | 조회 실패 | 暂时查不到天气 | 이번엔 날씨를 찾지 못했어요 |
 
+### 4. 나머지 UI 전체
+
+메뉴·설정 밖의 화면들도 번역했습니다. 이 영역들은 `t()`를 전혀 쓰지 않는 하드코딩이라
+번들 소스의 `#region` 경계를 이용해 영역 단위로 치환했습니다 — [자세히](#나머지-ui는-영역region-단위로-바꿨다).
+
+| 영역 | 전 | 후 |
+|---|---|---|
+| **할 일 패널** | 待办事项 · 记一件要做的事… · 0 项未完成 | 할 일 · 할 일을 적어보세요… · 0개 남음 |
+| **마감 선택기** | 一 二 三 四 五 六 日 · 今天 · 上个月 | 월 화 수 목 금 토 일 · 오늘 · 지난달 |
+| **마감 표시** | 明天 09:00 · 已逾期2小时 · 还剩30分钟 | 내일 09:00 · 2시간 지남 · 30분 남음 |
+| **음성 입력** | 按住说话 · 识别中… · 没录到声音 | 눌러서 말하기 · 인식 중… · 녹음된 소리가 없어요 |
+| **잔액 게이지** | 周 · 月 · 额度已用 45% · 已重置 | 주 · 월 · 사용량 45% · 리셋됨 |
+| **시스템 알림** | 对话完成 · 生成失败 · 正在申请权限 | 대화 완료 · 생성 실패 · 권한을 요청하는 중 |
+| **「밥 먹기」 미니게임** | 开饭了—— · 饿了饿了饿了 · 接住！ | 밥 시간이야—— · 배고파 배고파 배고파 · 받아! |
+| **작업 중 대사 127개** | 翻翻 {target} 看看嘛 · 折腾折腾 git 仓库 | {target} 좀 볼까 · git 좀 만져볼게 |
+| **음성 이름** | 晓晓 · 晓伊 · 云希 · 云健 | 샤오샤오 · 샤오이 · 윈시 · 윈젠 |
+
 ## 요구 사항
 
 - Python 3.8+
@@ -108,6 +125,10 @@ locale       WOULD-PATCH(ns=2,hardcoded=15)
 helper       WOULD-PATCH(ns=0,hardcoded=6)
 weather      WOULD-PATCH(codes=28)
 city         WOULD-PATCH
+todo-ui      WOULD-PATCH(119)
+todo-helper  WOULD-PATCH(83)
+narration    WOULD-PATCH(127)
+host-ui      WOULD-PATCH(13)
 
 $ python verify_dsh_pet_ko.py
 client       176 entries
@@ -126,8 +147,12 @@ values with Han: 0
 [weather] client env-view 라벨 OK
 [weather] shared-core env-view 라벨 OK
 [weather] 도시명 OK (IP 좌표 → 역지오코딩 ko, geocode ko→zh 폴백)
+[ui] client 번역 OK
+[ui] shared-core 번역 OK
+[ui] 작업 대사(127개) OK
+[ui] 음성 이름 OK
 
-RESULT: OK — 메뉴·설정·대화 UI·날씨가 모두 한국어입니다
+RESULT: OK — 메뉴·설정·대화·날씨·할일·음성·대사가 모두 한국어입니다
 ```
 
 ### 되돌리기
@@ -243,6 +268,40 @@ node check_weather_ko.mjs
 RESULT: OK — 날씨 버블이 전부 한국어입니다
 ```
 
+### 나머지 UI는 영역(#region) 단위로 바꿨다
+
+할 일 패널·음성 입력·잔액 게이지·미니게임은 `t()`도 안 쓰고 사전도 없습니다.
+그런데 `"完成"`·`"今天"` 같은 짧은 문자열이 파일 곳곳에 흩어져 있어
+단순 치환은 위험합니다. 번들에 남아 있는 `//#region` 경계를 이용해 **영역 안에서만**
+치환하면 안전합니다.
+
+```python
+def region_span(src, name):
+    start = src.find("//#region " + name)
+    end   = src.find("//#endregion", start)
+    return start, end
+```
+
+세 가지 규칙을 지킵니다.
+
+1. 그 영역 안에서 **정확히 한 번** 나와야 한다 → 아니면 `REGION-AMBIGUOUS`로 중단
+2. 같은 문구를 같은 값으로 여러 번 바꿔야 하면 `REGION_ALLOW_MULTI`에 등록
+3. **웹(`client.js`)과 데스크톱 헬퍼(`shared-core.js`) 양쪽**에 적용 —
+   한쪽만 고치면 데스크톱 펫에 중문이 남습니다
+
+작업 중 대사 127개는 양이 많아 [tool_copy_map.json](tool_copy_map.json)으로 분리했습니다.
+
+```
+node check_todo_ko.mjs
+```
+```
+WEEKDAYS: "일", "월", "화", "수", "목", "금", "토"
+  due_null         "기한 없음"
+  remaining_soon   "2시간 남음"
+  span_day         "5일"
+RESULT: OK — 할 일 포맷이 전부 한국어
+```
+
 ## 말도 한국어로
 
 메뉴·UI와 별개로, 펫이 하는 말은 `~/.dsh/dsh-pet/main-config.jsonc`에서 설정합니다.
@@ -272,10 +331,11 @@ RESULT: OK — 날씨 버블이 전부 한국어입니다
 - **짤 이미지 안의 글자는 여전히 중국어**입니다. 그림 파일이라 번역 대상이 아닙니다.
 - **날씨는 외부 API 3곳에 의존합니다** — `ip-api.com`(위치), `bigdatacloud.net`(한국어 지명),
   `open-meteo.com`(날씨). 어디든 막히면 해당 부분만 원래 동작(중문/영문 지명)으로 돌아갑니다.
-- **아직 중문인 영역이 남아 있습니다** — 할 일 패널, 「吃白饭」 미니게임 대사,
-  음성 입력 안내, 잔액 버블, 시스템 알림 문구. `HARDCODED` 목록에 추가하면 같은 방식으로 번역됩니다.
+- **개발자용 메시지는 번역하지 않았습니다** — provider 등록 검증 오류, 내부 로그,
+  잔액 provider 예외 문구. 화면에 보이지 않고 플러그인 개발자의 디버깅용입니다.
 - 패치 후 dsh-pet 내부 구조가 바뀌면 `ANCHOR-MISS` / `HARDCODED-AMBIGUOUS` / `WMO-MISS` /
-  `GEO-ANCHOR-MISS`가 날 수 있습니다. 그때는 `--check` 출력을 보고 이슈로 알려 주세요.
+  `GEO-ANCHOR-MISS` / `REGION-AMBIGUOUS` / `TOOL-MISS`가 날 수 있습니다.
+  그때는 `--check` 출력을 보고 이슈로 알려 주세요.
 - **비공식 패치**입니다. dsh-pet 원저작자와 무관하며, 문제는 이 저장소로 주세요.
 
 ## 크레딧

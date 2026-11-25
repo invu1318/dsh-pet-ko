@@ -215,6 +215,51 @@ RESULT: OK — 날씨 버블이 전부 한국어입니다
 
 ---
 
+## 5-C. 나머지 UI 번역 — 영역(#region) 단위 치환
+
+번들에는 `//#region src/shared/todo/render.ts` 같은 경계 주석이 있다.
+이걸 이용해 **영역 안에서만** 문자열을 치환하면, `"完成"`·`"今天"`처럼
+온 파일에 흩어져 있는 짧은 문자열도 안전하게 다룰 수 있다.
+
+```python
+def region_span(src, name):
+    start = src.find("//#region " + name)
+    end = src.find("//#endregion", start)
+    return start, end
+```
+
+규칙 세 가지:
+
+1. **영역 안에서 유일해야 한다** — 아니면 `REGION-AMBIGUOUS`로 중단.
+2. 같은 문구를 여러 번 같은 값으로 바꾸면 되는 경우는 `REGION_ALLOW_MULTI`에 허용 등록.
+   (예: 「밥 먹기」의 `这一页找不到这只宠物`가 두 곳)
+3. **두 번들 모두 적용** — 웹(`client.js`)과 데스크톱 헬퍼(`shared-core.js`)에 코드가 중복.
+   한쪽만 고치면 데스크톱 펫에서 중문이 남는다(날씨에서 겪은 실수).
+
+### 작업 대사는 JSON으로 분리
+
+`src/host/tool-detail/copy.ts`의 대사는 127개라 파이썬 dict에 넣기엔 크다.
+`tool_copy_map.json`(중국어→한국어)으로 두고 `patch_tool_copy()`가 읽는다.
+
+주의: GLOB와 GREP에 `{target} 都躲哪儿了呢`처럼 **같은 원문이 다른 뜻으로** 쓰이는
+경우가 있다. 같은 한국어로 매핑하면 나중에 되돌릴 때 충돌하므로 서로 다른 번역을 준다.
+
+### 실행 확인
+
+```powershell
+node check_todo_ko.mjs
+```
+
+```
+WEEKDAYS: "일", "월", "화", "수", "목", "금", "토"
+  due_null         "기한 없음"
+  remaining_soon   "2시간 남음"
+  span_day         "5일"
+RESULT: OK — 할 일 포맷이 전부 한국어
+```
+
+---
+
 ## 6. 저장소 (C:\work\dsh-pet-ko)
 
 ```
@@ -226,8 +271,10 @@ C:\work\dsh-pet-ko\
 ├── README.md                사용법·원리·제한
 ├── HANDOFF.md               이 문서
 ├── patch_dsh_pet_ko.py      --check / (없음) / --revert
-├── verify_dsh_pet_ko.py     커버리지 검증 (메뉴 + 로케일 + 날씨)
+├── verify_dsh_pet_ko.py     커버리지 검증 (메뉴·로케일·날씨·UI)
 ├── check_weather_ko.mjs     날씨 버블 종단 확인 (인증 없이 실행)
+├── check_todo_ko.mjs        할 일 포맷 종단 확인 (인증 없이 실행)
+├── tool_copy_map.json       작업 중 대사 127개 (중국어→한국어)
 └── pet_locale_ko.json       한국어 사전 283키 (번역 수정은 여기서)
 ```
 
@@ -293,12 +340,28 @@ DSH를 켜면 **웹 포트가 매번 바뀐다.** `$env:DSH_WEB_URL` 또는 이 
 
 ### 남은 개선 여지
 - **짤 이미지 안의 글자는 여전히 중국어** — 그림 파일이라 번역 대상이 아님. 하려면 이미지 재생성이 필요.
-- **아직 중문인 영역** — 사용 빈도가 낮아 손대지 않았다. 같은 방식(하드코딩 치환 목록)으로 확장 가능:
-  - `src/shared/todo/*` — 할 일 패널·마감 선택기 (약 60개)
-  - `src/client/baifan/*` — 「吃白饭」 미니게임 대사 (약 30개)
-  - `src/shared/chat/hear-control.ts` — 음성 입력 안내 (16개)
-  - `src/shared/balance/*` — 잔액 버블 (18개)
-  - `src/shared/notify.ts` — 시스템 알림 제목·본문 (8개)
+- **개발자용 메시지는 그대로 뒀다** — provider 등록 검증 오류(`provider id 必须...`),
+  내부 로그, 잔액 provider 예외 문구. 사용자에게 화면으로 보이지 않고,
+  플러그인 개발자가 자기 플러그인을 디버깅할 때 쓰는 값이라 건드리지 않았다.
+- **`src/host/tool-detail/copy.ts`의 주석**은 중국어로 남아 있다(대사 본문은 번역됨).
+  주석은 실행에 영향이 없어 그대로 뒀다.
+
+### 번역된 영역 (전부 적용 완료)
+
+| 영역 | 위치 | 개수 |
+|---|---|---|
+| 메뉴 라벨 | client / shared-core / tray | 176 |
+| 설정·대화 사전 | client.js | 283키 |
+| 날씨 문구·라벨·도시명 | index.js + env-view(양쪽) | 28+6 |
+| 할 일 패널·마감 선택기 (월~일, 오늘/내일/모레) | todo/* | 119 (웹) |
+| 음성 입력 안내 | hear-control.js | 16 |
+| 잔액 게이지 (주/월, 리셋, 사용량) | balance/* | 30 |
+| 시스템 알림 제목 | notify.js | 8 |
+| 「밥 먹기」 미니게임 | baifan/* | 27 |
+| **작업 중 중얼거림 대사** | `tool-detail/copy.ts` | **127** |
+| 음성 이름 (샤오샤오·샤오이·윈시·윈젠) | voice/voices.js | 8 |
+
+대사 표는 양이 많아 `tool_copy_map.json`(중국어→한국어)으로 분리했다.
 
 ### 세션/환경 제약
 - **이 DSH 웹 GUI는 인증이 필요**해서 에이전트가 브라우저로 열면 401입니다.

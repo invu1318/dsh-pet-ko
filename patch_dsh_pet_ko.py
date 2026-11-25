@@ -747,7 +747,463 @@ def revert_wmo() -> str:
     return "REVERTED"
 
 
+def region_span(src, name):
+    tag = "//#region " + name
+    start = src.find(tag)
+    if start < 0:
+        return None
+    end = src.find("//#endregion", start)
+    if end < 0:
+        return None
+    return start, end
+
+
+def patch_region_ui(path, check_only):
+    """#region 안에서만 중문 라벨을 치환한다 (짧은 문자열 안전)."""
+    if not os.path.exists(path):
+        return "MISSING"
+    with io.open(path, "r", encoding="utf-8", newline="") as fh:
+        src = fh.read()
+
+    # 이 번들에 실제로 있는 영역만 대상
+    todo, ambiguous = [], []
+    for region, pairs in REGION_UI.items():
+        span = region_span(src, region)
+        if span is None:
+            continue
+        body = src[span[0]:span[1]]
+        for old, new in pairs:
+            if new in body:
+                continue          # 이미 번역됨
+            n = body.count(old)
+            if n == 1:
+                todo.append((region, old, new))
+            elif n > 1 and (region, old) in REGION_ALLOW_MULTI:
+                todo.append((region, old, new))
+            elif n > 1:
+                ambiguous.append((region, old, n))
+
+    if ambiguous:
+        return "REGION-AMBIGUOUS:" + ",".join(
+            "%s=%d" % (o, n) for _r, o, n in ambiguous[:3])
+    if not todo:
+        return "ALREADY-PATCHED"
+    if check_only:
+        return "WOULD-PATCH(%d)" % len(todo)
+
+    # 영역별로 모아서 한 번에 치환 (오프셋이 밀리지 않게 뒤에서부터)
+    for region in {r for r, _o, _n in todo}:
+        span = region_span(src, region)
+        if span is None:
+            continue
+        body = src[span[0]:span[1]]
+        for r, old, new in todo:
+            if r == region:
+                body = body.replace(old, new)
+        src = src[:span[0]] + body + src[span[1]:]
+
+    with io.open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(src)
+    return "PATCHED(%d)" % len(todo)
+
+
+def revert_region_ui(path):
+    if not os.path.exists(path):
+        return "MISSING"
+    with io.open(path, "r", encoding="utf-8", newline="") as fh:
+        src = fh.read()
+    count = 0
+    for region, pairs in REGION_UI.items():
+        span = region_span(src, region)
+        if span is None:
+            continue
+        body = src[span[0]:span[1]]
+        for old, new in pairs:
+            if new in body:
+                body = body.replace(new, old)
+                count += 1
+        src = src[:span[0]] + body + src[span[1]:]
+    if count == 0:
+        return "NOT-PATCHED"
+    with io.open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(src)
+    return "REVERTED(%d)" % count
+
+
+def patch_tool_copy(check_only):
+    """펫 작업 대사 표(중국어 → 한국어). lib/index.js 한 곳."""
+    if not os.path.exists(TOOL_COPY_PATH):
+        return "NO-MAP-FILE"
+    path = TARGETS["client"].replace("client.js", "index.js")
+    if not os.path.exists(path):
+        return "MISSING"
+    with io.open(path, "r", encoding="utf-8", newline="") as fh:
+        src = fh.read()
+    span = region_span(src, TOOL_COPY_REGION)
+    if span is None:
+        return "ANCHOR-MISS:region"
+    body = src[span[0]:span[1]]
+
+    with io.open(TOOL_COPY_PATH, "r", encoding="utf-8") as fh:
+        table = json.load(fh)
+
+    todo = []
+    for zh, ko in table.items():
+        if zh.startswith("_"):
+            continue
+        if '\"%s\"' % ko in body:
+            continue                      # 이미 번역됨
+        n = body.count('"%s"' % zh)
+        if n == 0:
+            return "TOOL-MISS:%s" % zh
+        todo.append(zh)
+
+    if not todo:
+        return "ALREADY-PATCHED"
+    if check_only:
+        return "WOULD-PATCH(%d)" % len(todo)
+
+    for zh in todo:
+        body = body.replace('"%s"' % zh, '"%s"' % table[zh])
+    src = src[:span[0]] + body + src[span[1]:]
+
+    with io.open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(src)
+    return "PATCHED(%d)" % len(todo)
+
+
+def revert_tool_copy():
+    if not os.path.exists(TOOL_COPY_PATH):
+        return "NO-MAP-FILE"
+    path = TARGETS["client"].replace("client.js", "index.js")
+    if not os.path.exists(path):
+        return "MISSING"
+    with io.open(path, "r", encoding="utf-8", newline="") as fh:
+        src = fh.read()
+    span = region_span(src, TOOL_COPY_REGION)
+    if span is None:
+        return "ANCHOR-MISS:region"
+    body = src[span[0]:span[1]]
+    with io.open(TOOL_COPY_PATH, "r", encoding="utf-8") as fh:
+        table = json.load(fh)
+    count = 0
+    for zh, ko in table.items():
+        if zh.startswith("_"):
+            continue
+        if '"%s"' % ko in body:
+            body = body.replace('"%s"' % ko, '"%s"' % zh)
+            count += 1
+    if count == 0:
+        return "NOT-PATCHED"
+    src = src[:span[0]] + body + src[span[1]:]
+    with io.open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(src)
+    return "REVERTED(%d)" % count
+
+
 GEO_MARKER = "[dsh-pet-ko]"
+
+# --------------------------------------------------------------------------
+# 남은 UI 중문 번역. 짧은 문자열("完成", "添加")이 여러 곳에 나오므로
+# **영역(#region) 안에서만** 치환한다. 각 항목은 그 영역 안에서 유일해야 한다.
+# 웹 번들과 shared-core.js에 같은 코드가 중복되어 있어 둘 다 적용한다.
+# --------------------------------------------------------------------------
+
+REGION_UI = {
+    "src/shared/todo/format.ts": [
+        ('"周日"', '"일"'), ('"周一"', '"월"'), ('"周二"', '"화"'),
+        ('"周三"', '"수"'), ('"周四"', '"목"'), ('"周五"', '"금"'), ('"周六"', '"토"'),
+        ("`${minutes}分钟`", "`${minutes}분`"),
+        ("`${hours}小时`", "`${hours}시간`"),
+        ("`${Math.max(1, Math.round(hours / 24))}天`",
+         "`${Math.max(1, Math.round(hours / 24))}일`"),
+        ("if (dueAt === null) return \"无期限\";", "if (dueAt === null) return \"기한 없음\";"),
+        ("return todo.dueAt === null ? \"已完成\" :",
+         "return todo.dueAt === null ? \"완료\" :"),
+        ("if (todo.dueAt === null) return \"无期限\";", "if (todo.dueAt === null) return \"기한 없음\";"),
+        ("`今天 ${clock}`", "`오늘 ${clock}`"),
+        ("`明天 ${clock}`", "`내일 ${clock}`"),
+        ("`后天 ${clock}`", "`모레 ${clock}`"),
+        ("`${due.getMonth() + 1}月${due.getDate()}日 ${clock}`",
+         "`${due.getMonth() + 1}월 ${due.getDate()}일 ${clock}`"),
+        ("`已逾期${spanText(now - dueAt)}`", "`${spanText(now - dueAt)} 지남`"),
+        ("`还剩${spanText(dueAt - now)}`", "`${spanText(dueAt - now)} 남음`"),
+        ("`已完成 · ${dueLabel(todo.dueAt, now)}`", "`완료 · ${dueLabel(todo.dueAt, now)}`"),
+    ],
+    "src/shared/todo/render.ts": [
+        ('"还没有待办。记一件要做的事，到点我会提醒你～"',
+         '"아직 할 일이 없어요. 하나 적어두면 때가 되면 알려줄게요~"'),
+        ('root.setAttribute("aria-label", "待办事项");',
+         'root.setAttribute("aria-label", "할 일");'),
+        ('element("span", "dsh-pet-todo-title", "待办事项")',
+         'element("span", "dsh-pet-todo-title", "할 일")'),
+        ('"0 项未完成"', '"0개 남음"'),
+        ('"关闭待办面板"', '"할 일 패널 닫기"'),
+        ('"记一件要做的事…"', '"할 일을 적어보세요…"'),
+        ('"待办内容"', '"할 일 내용"'),
+        ('"离到期越近，我会提醒得越勤快～"', '"마감이 가까울수록 더 자주 알려줄게요~"'),
+        ("`${pending} 项未完成`", "`${pending}개 남음`"),
+        ('"添加"', '"추가"'),
+        ('"标记未完成："', '"미완료로 표시: "'),
+        ('"标记完成："', '"완료로 표시: "'),
+        ('"删除：" + todo.text', '"삭제: " + todo.text'),
+        ('"确认"', '"확인"'),
+    ],
+    "src/shared/todo/due-picker.ts": [
+        ('"提醒时间（可选）"', '"알림 시각(선택)"'),
+        ('"选择提醒时间"', '"알림 시각 선택"'),
+        ('"上个月"', '"지난달"'),
+        ('"下个月"', '"다음달"'),
+        ("`${date.getMonth() + 1}月${date.getDate()}日`", "`${date.getMonth() + 1}월 ${date.getDate()}일`"),
+        ("state.view.getFullYear()}年${state.view.getMonth() + 1}月",
+         "state.view.getFullYear()}년 ${state.view.getMonth() + 1}월"),
+        ("${value} ${isHour ? \"时\" : \"分\"}", "${value} ${isHour ? \"시\" : \"분\"}"),
+        ('hourChip.setAttribute("aria-label", "选择小时")',
+         'hourChip.setAttribute("aria-label", "시 선택")'),
+        ('minuteChip.setAttribute("aria-label", "选择分钟")',
+         'minuteChip.setAttribute("aria-label", "분 선택")'),
+        ('state.mode === "hour" ? "选择小时" : "选择分钟"',
+         'state.mode === "hour" ? "시 선택" : "분 선택"'),
+        ('"完成"', '"완료"'),
+        ("makeButton(\"dsh-pet-todo-due\", \"无期限\")",
+         "makeButton(\"dsh-pet-todo-due\", \"기한 없음\")"),
+        ('ms === null ? "无期限" : dueLabel(ms, Date.now())',
+         'ms === null ? "기한 없음" : dueLabel(ms, Date.now())'),
+        ('"无期限" : dueLabel(ms, Date.now())', '"기한 없음" : dueLabel(ms, Date.now())'),
+    ],
+    "src/shared/todo/panel.ts": [
+        ('"清单加载失败，关掉面板再开一次试试"',
+         '"목록을 불러오지 못했어요. 패널을 닫았다 다시 열어보세요"'),
+        ('"这个时间已经过去了，换一个吧"', '"이미 지난 시각이에요. 다른 시각으로 골라주세요"'),
+        ('"加载中…"', '"불러오는 중…"'),
+    ],
+    # ---- 2차: 알림 / 대화 입력 / 잔액 / 할 일 API / 미니게임 ----
+    "src/shared/notify.ts": [
+        ('composeTitle(sessionTitle, "生成失败")', 'composeTitle(sessionTitle, "생성 실패")'),
+        ('title: "生成失败",', 'title: "생성 실패",'),
+        ('?? "对话完成",', '?? "대화 완료",'),
+        ('"输出被截断"', '"출력이 잘렸어요"'),
+        ('"已达到输出 token 上限"', '"출력 토큰 한도에 도달했어요"'),
+        ('"正在申请权限"', '"권한을 요청하는 중"'),
+        ('"模型在等你回答"', '"모델이 답을 기다리고 있어요"'),
+    ],
+    "src/shared/chat/dom.ts": [
+        ('input.placeholder = "说点什么…";', 'input.placeholder = "무슨 말이든 해보세요…";'),
+        ('iconButton("上传图片"', 'iconButton("이미지 첨부"'),
+        ('iconButton("截取当前屏幕"', 'iconButton("화면 캡처"'),
+        ('iconButton("按住说话"', 'iconButton("눌러서 말하기"'),
+        ('"已选图片"', '"선택한 이미지"'),
+        ('attachX.title = "移除图片";', 'attachX.title = "이미지 제거";'),
+        ('attachX.setAttribute("aria-label", "移除图片")',
+         'attachX.setAttribute("aria-label", "이미지 제거")'),
+        ('"只支持 PNG / JPEG / WebP / GIF"', '"PNG / JPEG / WebP / GIF만 됩니다"'),
+        ('"读图失败："', '"이미지를 읽지 못했어요: "'),
+        ('"截屏失败："', '"화면 캡처 실패: "'),
+        ('"当前环境不支持截屏，先用上传试试"', '"이 환경에서는 화면 캡처를 지원하지 않아요. 먼저 업로드를 써보세요"'),
+    ],
+    "src/shared/chat/dialog.ts": [
+        ('"图片还在处理，稍等一下"', '"이미지를 아직 처리하고 있어요. 잠시 기다려 주세요"'),
+        ('"对话失败："', '"대화 실패: "'),
+        ('"对话异常："', '"대화 오류: "'),
+    ],
+    "src/shared/chat/encode.ts": [
+        ('reader.onerror = () => reject(new Error("这个文件读不出来"))',
+         'reader.onerror = () => reject(new Error("이 파일을 읽을 수 없어요"))'),
+        ('\t\t\t\treject(new Error("这个文件读不出来"));',
+         '\t\t\t\treject(new Error("이 파일을 읽을 수 없어요"));'),
+        ('"这个文件解不出图片"', '"이 파일은 이미지로 열 수 없어요"'),
+        ('"无法压到预算内"', '"전송 크기 안으로 줄이지 못했어요"'),
+        ('"不是可发送的图片"', '"보낼 수 있는 이미지가 아니에요"'),
+    ],
+    "src/shared/todo/api.ts": [
+        ('"响应不是 JSON"', '"응답이 JSON이 아니에요"'),
+        ('reason : "请求被拒绝"', 'reason : "요청이 거부되었어요"'),
+        ('"连不上桌宠服务："', '"펫 서비스에 연결하지 못했어요: "'),
+        ('"响应里没有有效的待办"', '"응답에 유효한 할 일이 없어요"'),
+    ],
+    "src/shared/balance/view.ts": [
+        ('"当前服务商暂不支持余额查询"', '"현재 제공자는 잔액 조회를 지원하지 않아요"'),
+        ('"当前服务商："', '"현재 제공자: "'),
+        ('"缺少余额查询凭证"', '"잔액 조회 자격 증명이 없어요"'),
+        ('"余额查询失败"', '"잔액 조회 실패"'),
+    ],
+    "src/client/baifan/constants.ts": [
+        ('"吃白饭"', '"밥 먹기"'),
+        ('"开饭了——"', '"밥 시간이야——"'),
+        ('"白饭时间到！"', '"밥 먹을 시간!"'),
+        ('"饿了饿了饿了"', '"배고파 배고파 배고파"'),
+        ('"等我下去……"', '"내려갈게……"'),
+        ('"下面有饭香"', '"아래에서 밥 냄새가 나"'),
+        ('"让一让，我下去了"', '"비켜줘, 내려갈게"'),
+        ('"饭呢？饭呢？"', '"밥 어디 있어? 밥?"'),
+        ('"快点快点"', '"빨리 빨리"'),
+        ('"……还没好吗"', '"……아직 안 됐어?"'),
+        ('"掉下来了！"', '"떨어진다!"'),
+        ('"接住！"', '"받아!"'),
+        ('"来了来了"', '"간다 간다"'),
+        ('"碗饭最香"', '"그릇밥이 제일 맛있어"'),
+        ('"这个碗我要了"', '"이 그릇 내 거야"'),
+        ('"再来一碗"', '"한 그릇 더"'),
+        ('"饭团饭团"', '"주먹밥 주먹밥"'),
+        ('"一口一个"', '"한 입에 하나"'),
+        ('"捏得刚好"', '"딱 맞게 뭉쳤어"'),
+        ('"嗝——还能吃！"', '"끄윽——더 먹을 수 있어!"'),
+        ('"这点不够塞牙缝"', '"이걸로는 이에 끼지도 않아"'),
+        ('"再来十份"', '"열 그릇 더"'),
+    ],
+    # ---- 3차: 음성 입력 안내 ----
+    "src/shared/chat/hear-control.ts": [
+        ('"当前地址不支持录音：用 https 或 localhost 打开才有麦克风"',
+         '"이 주소에서는 녹음할 수 없어요. https나 localhost로 열어야 마이크를 쓸 수 있습니다"'),
+        ('"这个入口没有接上识别地址"', '"이 진입점에는 인식 주소가 연결되어 있지 않아요"'),
+        ('"这个宿主没开语音识别"', '"이 호스트는 음성 인식을 켜지 않았어요"'),
+        ('"音频没通过宿主校验"', '"오디오가 호스트 검증을 통과하지 못했어요"'),
+        ('"识别请求失败：" + outcome.message', '"인식 요청 실패: " + outcome.message'),
+        ('"未知原因"', '"알 수 없는 이유"'),
+        ('hint.show("识别中…")', 'hint.show("인식 중…")'),
+        ('hint.flash("没录到声音")', 'hint.flash("녹음된 소리가 없어요")'),
+        ('"没听到声音，检查一下麦克风"', '"소리가 들리지 않았어요. 마이크를 확인해 주세요"'),
+        ('hint.flash("没听清，再说一次")', 'hint.flash("잘 못 들었어요. 다시 말해 주세요")'),
+        ('"录音出错：" + (e instanceof Error', '"녹음 오류: " + (e instanceof Error'),
+        ('"正在打开麦克风…"', '"마이크를 여는 중…"'),
+        ('"打不开麦克风："', '"마이크를 열지 못했어요: "'),
+        ('"录音中 "', '"녹음 중 "'),
+        ('" · 松开结束"', '" · 떼면 끝나요"'),
+    ],
+    # ---- 4차: 잔액 게이지 ----
+    "src/shared/balance/handlers/windows.ts": [
+        ('\tweekly: "周",', '\tweekly: "주",'),
+        ('\tmonthly: "月"', '\tmonthly: "월"'),
+        ('if (delta <= 0) return "已重置";', 'if (delta <= 0) return "리셋됨";'),
+        ('return (Math.round(hoursF / 24 * 10) / 10).toFixed(1) + " 天";',
+         'return (Math.round(hoursF / 24 * 10) / 10).toFixed(1) + "일";'),
+        ('return Math.max(.1, Math.round(hoursF * 10) / 10).toFixed(1) + " 小时";',
+         'return Math.max(.1, Math.round(hoursF * 10) / 10).toFixed(1) + "시간";'),
+        ('if (reset === "") return "重置时间未知";', 'if (reset === "") return "리셋 시각 알 수 없음";'),
+        ('return reset === "已重置" ? reset : reset + "重置";',
+         'return reset === "리셋됨" ? reset : reset + " 후 리셋";'),
+        ('text: "额度数据不可用"', 'text: "사용량 데이터를 쓸 수 없어요"'),
+        ('text: w.label + "额度已用 " + Math.round(w.percent) + "%"',
+         'text: w.label + " 사용량 " + Math.round(w.percent) + "%"'),
+    ],
+    "src/shared/todo/due-picker.ts": [
+        # 요일 머리글 (월요일 시작)
+        ('const WEEK_HEAD = [\n\t"一",\n\t"二",\n\t"三",\n\t"四",\n\t"五",\n\t"六",\n\t"日"\n];',
+         'const WEEK_HEAD = [\n\t"월",\n\t"화",\n\t"수",\n\t"목",\n\t"금",\n\t"토",\n\t"일"\n];'),
+        ('"今天"', '"오늘"'),
+        ('"清除"', '"지우기"'),
+    ],
+    # ---- 5차: 잔액 상세 / 점수 팝업 / 단축키 힌트 / 알림 / 미니게임 ----
+    "src/shared/balance/handlers/money.ts": [
+        ('text: "余额 " + amount', 'text: "잔액 " + amount'),
+        ('text: "余额（"', 'text: "잔액("'),
+        ('v.tier === "peak" ? "峰" : "谷"', 'v.tier === "peak" ? "피크" : "오프"'),
+        ('text: "）" + amount', 'text: ") " + amount'),
+    ],
+    "src/shared/balance/handlers/windows.ts": [
+        ('compactCount(u.inputTokens) + " 入"', 'compactCount(u.inputTokens) + " 입력"'),
+        ('compactCount(u.outputTokens) + " 出"', 'compactCount(u.outputTokens) + " 출력"'),
+        ('const period = "本期 " + u.requests + " 次";',
+         'const period = "이번 기간 " + u.requests + "회";'),
+    ],
+    "src/shared/score-popup.ts": [
+        ('"速度 " + Math.round(opts.speed) + " · 大小 " + Math.round(opts.size)',
+         '"속도 " + Math.round(opts.speed) + " · 크기 " + Math.round(opts.size)'),
+    ],
+    "src/shared/display-hotkey.ts": [
+        ('String(index + 1) + " 键"', 'String(index + 1) + " 키"'),
+    ],
+    "src/client/chat/state.ts": [
+        ('petName: pet?.name || "宠"', 'petName: pet?.name || "펫"'),
+    ],
+    "src/shared/notify.ts": [
+        ('"工具「" + toolName + "」"', '"도구 \\"" + toolName + "\\""'),
+    ],
+    "src/shared/chat/hotkey.ts": [
+        ('"L 键"', '"L 키"'),
+        ('"S 键"', '"S 키"'),
+    ],
+    "src/shared/sleep-hotkey.ts": [
+        ('"Z 键"', '"Z 키"'),
+    ],
+    "src/shared/todo/hotkey.ts": [
+        ('"D 键"', '"D 키"'),
+    ],
+    "src/shared/chat/hear-hold.ts": [
+        ('"M 键"', '"M 키"'),
+    ],
+    "src/shared/chat/capture.ts": [
+        ('"当前环境不支持截屏"', '"이 환경에서는 화면 캡처를 지원하지 않아요"'),
+    ],
+    "src/shared/hear.ts": [
+        ('"识别响应不是 JSON"', '"인식 응답이 JSON이 아니에요"'),
+    ],
+    "src/shared/chat/hear-control.ts": [
+        ('"识别失败：" + (outcome.message', '"인식 실패: " + (outcome.message'),
+    ],
+    "src/shared/whisper.ts": [
+        ('"当前对话未配置模型，碎碎念不可用"', '"현재 대화에 모델이 설정되지 않아 혼잣말을 쓸 수 없어요"'),
+        ('"碎碎念生成失败"', '"혼잣말 생성 실패"'),
+    ],
+    "src/shared/todo/api.ts": [
+        ('"请求失败（HTTP ${response.status}）"', '"요청 실패(HTTP ${response.status})"'),
+    ],
+    "src/shared/balance/handlers/points.ts": [
+        ('"积分数据不可用"', '"포인트 데이터를 쓸 수 없어요"'),
+        ('text: "余额 " + ', 'text: "잔액 " + '),
+    ],
+    "src/client/baifan/show.ts": [
+        ('"点播失败："', '"재생 실패: "'),
+        ('"这一页找不到这只宠物"', '"이 페이지에서 이 펫을 찾을 수 없어요"'),
+        ('"锁丢了，表演结束"', '"락을 잃었어요. 공연 끝"'),
+        ('"用户接管，已收场"', '"사용자가 넘겨받아 마무리했어요"'),
+        ('"重新开始"', '"다시 시작"'),
+        ('"吃白饭 —— 开饭了"', '"밥 먹기 —— 밥 시간이야"'),
+    ],
+    "src/client/baifan/lock.ts": [
+        ('"这只宠物没显示在网页里（display=" + String(created.display) + "）"',
+         '"이 펫은 웹에 표시되지 않아요 (display=" + String(created.display) + ")"'),
+        ('"取锁失败：" + String(reason ?? "unknown")', '"락을 잡지 못했어요: " + String(reason ?? "unknown")'),
+        ('"上一场还没收干净，等它过期…"', '"지난 판이 아직 정리되지 않았어요. 만료될 때까지 기다릴게요…"'),
+        ('"取锁失败：" + String(retry.reason ?? "unknown")',
+         '"락을 잡지 못했어요: " + String(retry.reason ?? "unknown")'),
+        ('"宠物被别人占着，等会儿再试"', '"다른 사람이 펫을 쓰고 있어요. 잠시 후 다시 시도하세요"'),
+    ],
+    # 설정 페이지 음성 목록 (미리듣기 이름)
+    "src/host/voice/voices.ts": [
+        ('name: "晓晓",', 'name: "샤오샤오",'),
+        ('tag: "女 · 通用",', 'tag: "여성 · 범용",'),
+        ('name: "晓伊",', 'name: "샤오이",'),
+        ('tag: "女 · 活泼",', 'tag: "여성 · 발랄",'),
+        ('name: "云希",', 'name: "윈시",'),
+        ('tag: "男 · 年轻",', 'tag: "남성 · 젊음",'),
+        ('name: "云健",', 'name: "윈젠",'),
+        ('tag: "男 · 沉稳",', 'tag: "남성 · 차분",'),
+    ],
+    "src/host/voice/builtin-deepseek-tts.ts": [
+        ('"海星"', '"불가사리"'),
+        ('"女声"', '"여성 음성"'),
+        ('"暗潮"', '"암초"'),
+        ('"男声"', '"남성 음성"'),
+    ],
+    "src/host/voice/builtin-dsh.ts": [
+        ('"DSH 语音插件"', '"DSH 음성 플러그인"'),
+    ],
+}
+
+# 영역 안에 같은 문구가 여러 번 나와도 전부 같은 번역으로 바꾸면 되는 항목.
+# (region, 원문) 형태. 위 REGION_UI에서 중복으로 걸리는 것을 여기서 허용한다.
+REGION_ALLOW_MULTI = {
+    ("src/client/baifan/show.ts", '"这一页找不到这只宠物"'),
+    ("src/host/tool-detail/copy.ts", '"这里得改改"'),
+    ("src/host/tool-detail/copy.ts", '"学个新本事"'),
+    ("src/host/tool-detail/copy.ts", '"叫人来搭把手"'),
+}
+
+# 펫이 작업 중에 중얼거리는 대사 표 (lib/index.js 의 tool-detail/copy.ts).
+# 양이 많아 JSON으로 분리했다: { 중국어: 한국어 }
+TOOL_COPY_PATH = os.path.join(HERE, "tool_copy_map.json")
+TOOL_COPY_REGION = "src/host/tool-detail/copy.ts"
 
 
 def patch_geocode(check_only: bool) -> str:
@@ -839,6 +1295,24 @@ def main() -> int:
     res = revert_geocode() if args.revert else patch_geocode(args.check)
     print("%-12s %s" % ("city", res))
     if res.startswith(("MISSING", "GEO-")):
+        rc = 1
+
+    for label, path in (("todo-ui", TARGETS["client"]), ("todo-helper", SHARED_CORE)):
+        res = revert_region_ui(path) if args.revert else patch_region_ui(path, args.check)
+        print("%-12s %s" % (label, res))
+        if res.startswith(("MISSING", "REGION-")):
+            rc = 1
+
+    res = revert_tool_copy() if args.revert else patch_tool_copy(args.check)
+    print("%-12s %s" % ("narration", res))
+    if res.startswith(("MISSING", "TOOL-", "NO-MAP")):
+        rc = 1
+
+    # 음성 이름 등 host 번들에만 있는 영역
+    host_js = os.path.join(PET_ROOT, "lib", "index.js")
+    res = revert_region_ui(host_js) if args.revert else patch_region_ui(host_js, args.check)
+    print("%-12s %s" % ("host-ui", res))
+    if res.startswith(("MISSING", "REGION-")):
         rc = 1
     return rc
 

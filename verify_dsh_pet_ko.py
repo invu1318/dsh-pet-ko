@@ -142,6 +142,72 @@ def verify_locale():
     return problems
 
 
+def verify_ui(problems):
+    """할 일·음성 입력·잔액·미니게임·작업 대사 번역 검증."""
+    # 번들마다 확인할 (영역, 대표 문자열이 사라졌는지 볼 중문 조각)
+    CHECKS = {
+        "src/shared/todo/render.ts": ["还没有待办", "待办事项", "0 项未完成", "关闭待办面板"],
+        "src/shared/todo/format.ts": ["周日", "无期限", "已逾期", "已完成"],
+        "src/shared/todo/due-picker.ts": ["提醒时间（可选）", "选择提醒时间", "上个月", "下个月"],
+        "src/shared/chat/hear-control.ts": ["识别中…", "没录到声音", "打不开麦克风：", "正在打开麦克风…"],
+        "src/shared/balance/handlers/windows.ts": ["额度数据不可用", "重置时间未知", "额度已用 "],
+        "src/shared/notify.ts": ["对话完成", "输出被截断", "正在申请权限"],
+        "src/client/baifan/constants.ts": ["开饭了——", "白饭时间到！", "饿了饿了饿了"],
+        "src/client/baifan/lock.ts": ["取锁失败：", "宠物被别人占着"],
+    }
+    for label, path in (("client", CLIENT), ("shared-core", SHARED)):
+        if not os.path.exists(path):
+            continue
+        body = io.open(path, encoding="utf-8").read()
+        bad = []
+        for region, needles in CHECKS.items():
+            span = region_span(body, region)
+            if span is None:
+                continue
+            seg = body[span[0]:span[1]]
+            bad += [n for n in needles if n in seg]
+        if bad:
+            print("\n[ui] %s 중문 잔존: %s" % (label, ", ".join(bad[:6])))
+            problems += len(bad)
+        else:
+            print("[ui] %s 번역 OK" % label)
+
+    # 작업 대사 표 (lib/index.js)
+    if os.path.exists(INDEX_JS):
+        idx = io.open(INDEX_JS, encoding="utf-8").read()
+        span = region_span(idx, "src/host/tool-detail/copy.ts")
+        if span is not None:
+            seg = idx[span[0]:span[1]]
+            left = HAN.findall(re.sub(r"/\*.*?\*/|//[^\n]*", "", seg, flags=re.S))
+            if left:
+                print("\n[ui] 작업 대사 중문 %d자 잔존" % len(left))
+                problems += 1
+            else:
+                print("[ui] 작업 대사(127개) OK")
+
+    # 음성 이름
+    if os.path.exists(INDEX_JS):
+        idx = io.open(INDEX_JS, encoding="utf-8").read()
+        span = region_span(idx, "src/host/voice/voices.ts")
+        if span is not None:
+            seg = idx[span[0]:span[1]]
+            bad = [s for s in ("晓晓", "晓伊", "云希", "云健", "女 · 通用") if s in seg]
+            if bad:
+                print("[ui] 음성 이름 중문 잔존: %s" % ", ".join(bad))
+                problems += len(bad)
+            else:
+                print("[ui] 음성 이름 OK")
+    return problems
+
+
+def region_span(src, name):
+    start = src.find("//#region " + name)
+    if start < 0:
+        return None
+    end = src.find("//#endregion", start)
+    return None if end < 0 else (start, end)
+
+
 def verify_weather(problems):
     """날씨 문구·도시명 한국어화 검증."""
     # 1. WMO 표: lib/index.js의 날씨 문구 28개
@@ -259,9 +325,10 @@ def main():
 
     locale_problems = verify_locale()
     weather_problems = verify_weather(locale_problems)
+    ui_problems = verify_ui(weather_problems)
 
-    ok = not missing and not dirty and weather_problems == 0
-    print("\nRESULT:", "OK — 메뉴·설정·대화 UI·날씨가 모두 한국어입니다"
+    ok = not missing and not dirty and ui_problems == 0
+    print("\nRESULT:", "OK — 메뉴·설정·대화·날씨·할일·음성·대사가 모두 한국어입니다"
           if ok else "확인 필요")
     return 0 if ok else 1
 
