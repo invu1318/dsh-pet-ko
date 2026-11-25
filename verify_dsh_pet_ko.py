@@ -12,7 +12,23 @@ PET_ROOT = os.path.join(os.environ.get("DSH_HOME", os.path.expanduser(r"~\.dsh")
                         "profiles", "desktop", "node_modules", "dsh-pet")
 CLIENT = os.path.join(PET_ROOT, "lib", "client.js")
 SHARED = os.path.join(PET_ROOT, "runtime", "electron-helper", "shared-core.js")
-CFG_URL = "http://127.0.0.1:13302/dsh-pet-7340/config"
+def resolve_cfg_url():
+    """DSH 웹 포트는 고정이 아니다. DSH_WEB_URL이 있으면 그걸 쓰고,
+    없으면 흔한 포트를 훑어 /dsh-pet-7340/config 가 살아 있는 곳을 찾는다."""
+    env = os.environ.get("DSH_WEB_URL")
+    candidates = []
+    if env:
+        candidates.append(env.rstrip("/"))
+    candidates += ["http://127.0.0.1:%d" % p for p in (13302, 4039, 12467)]
+    for base in candidates:
+        url = base + "/dsh-pet-7340/config"
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                if r.status == 200:
+                    return url
+        except Exception:
+            continue
+    return None
 HAN = re.compile(r"[\u4e00-\u9fff]")
 FIXED_LABELS = ["显示位置","仅网页","仅桌面","两者","都不","更多","动作","配图",
     "纳入对话的配图","其他","待机","转向","拖拽","点击回应","移动","余额档位",
@@ -112,12 +128,32 @@ def verify_locale():
     stripped = re.sub(r"//#region src/client/(settings|chat)/locales/.*?//#endregion",
                       "", stripped, flags=re.S)
     leftovers = [s for s in ("上传失败", "测试通知", "系统通知已就绪",
-                             "浏览器不支持缩放这张图")
+                             "浏览器不支持缩放这张图", "暂时查不到天气",
+                             '"体感"', '"湿度"', '"风速"')
                  if s in stripped]
     if leftovers:
         print("\n[locale] 하드코딩 중문 잔존: %s" % ", ".join(leftovers))
         problems += len(leftovers)
     return problems
+
+
+def load_local_config():
+    """번들 기본 설정(assets/config.jsonc)에서 이름 목록을 읽는다.
+
+    웹 API는 인증이 필요해 401이 나므로, 라이브 설정을 못 얻을 때의 기준으로 쓴다.
+    이 파일은 애니메이션·짤 이름의 완전한 참조라 커버리지 검사에 충분하다.
+    """
+    path = os.path.join(PET_ROOT, "assets", "config.jsonc")
+    if not os.path.exists(path):
+        return None
+    raw = io.open(path, encoding="utf-8").read()
+    # JSONC -> JSON: 주석과 후행 쉼표 제거
+    raw = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/', lambda m: m.group(1) or "", raw, flags=re.S)
+    raw = re.sub(r",(\s*[}\]])", r"\1", raw)
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
 
 
 def main():
@@ -130,16 +166,25 @@ def main():
         print("%-12s %d entries" % (label, len(d)))
     if dicts["client"] != dicts["shared-core"]:
         print("!! 웹/데스크톱 사전이 다릅니다"); return 1
-    try:
-        with urllib.request.urlopen(CFG_URL, timeout=8) as r:
-            cfg = json.loads(r.read().decode("utf-8")).get("main", {})
-        live = True
-    except Exception:
+
+    cfg_url = resolve_cfg_url()
+    cfg, source = None, "unavailable"
+    if cfg_url is not None:
+        try:
+            with urllib.request.urlopen(cfg_url, timeout=8) as r:
+                cfg = json.loads(r.read().decode("utf-8")).get("main", {})
+            source = cfg_url
+        except Exception:
+            cfg = None
+    if cfg is None:
+        cfg = load_local_config()
+        if cfg is not None:
+            source = "bundled assets/config.jsonc"
+    if cfg is None:
         cfg = {"animations": {}, "memes": {}}
-        live = False
     need = required_names(cfg)
     missing = sorted(n for n in need if n not in dicts["client"])
-    print("config source : %s" % ("live /dsh-pet-7340/config" if live else "unavailable"))
+    print("config source : %s" % source)
     print("required names: %d" % len(need))
     print("translated    : %d" % (len(need) - len(missing)))
     print("missing       : %d" % len(missing))

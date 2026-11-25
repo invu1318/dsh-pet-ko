@@ -66,6 +66,7 @@ LABELS = {
     "工作状态": "작업 상태",
     # root menu
     "查看余额": "잔액 보기",
+    "查询天气": "날씨 조회",
     "待办事项": "할 일",
     "碎碎念": "혼잣말",
     "对话": "대화",
@@ -376,6 +377,19 @@ HARDCODED = [
     # voice picker label: `name（tag）`
     ('`${option.name}（${option.tag}）`',
      '`${option.name} (${option.tag})`'),
+    # environment / weather bubble (src/shared/env-view.ts) -- hardcoded, never t()
+    ('const title = place === "" ? "天气" : place;',
+     'const title = place === "" ? "날씨" : place;'),
+    ('emptyText: "暂时查不到天气"',
+     'emptyText: "이번엔 날씨를 찾지 못했어요"'),
+    ('label: "体感"',
+     'label: "체감"'),
+    ('label: "湿度"',
+     'label: "습도"'),
+    ('label: "风速"',
+     'label: "풍속"'),
+    ('{ footer: "观测 " + observed }',
+     '{ footer: "관측 " + observed }'),
 ]
 
 

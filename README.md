@@ -13,11 +13,11 @@ dsh-pet은 UI 로케일을 zh / en / ja / es / fr / de / ru / pt만 지원합니
 
 ### 1. 우클릭 메뉴
 
-메뉴 트리 **163개 노드**, 번역 대상 **175개 항목**이 한국어가 됩니다.
+메뉴 트리 **163개 노드**, 번역 대상 **176개 항목**이 한국어가 됩니다.
 
 | 영역 | 전 | 후 |
 |---|---|---|
-| 루트 메뉴 | 查看余额 · 待办事项 · 碎碎念 · 对话 · 睡觉 | 잔액 보기 · 할 일 · 혼잣말 · 대화 · 자기 |
+| 루트 메뉴 | 查看余额 · 查询天气 · 待办事项 · 碎碎念 · 对话 · 睡觉 | 잔액 보기 · 날씨 조회 · 할 일 · 혼잣말 · 대화 · 자기 |
 | 표시 위치 | 显示位置 ▸ 仅网页 / 仅桌面 / 两者 / 都不 | 표시 위치 ▸ 웹만 / 데스크톱만 / 둘 다 / 모두 끔 |
 | 동작 트리 | 动作 ▸ 待机 / 转向 / 拖拽 / 点击回应 / 移动 / 小动作 / 玩耍 / 吃什么 / 时节 / 文字 | 동작 ▸ 대기 / 방향 전환 / 드래그 / 클릭 반응 / 이동 / 잔동작 / 놀이 / 먹기 / 절기 / 글자 |
 | 애니메이션 114개 | 待机呼吸休闲 · 东张西望 · 吃白饭 … | 대기 숨쉬기 · 두리번두리번 · 쌀밥 먹기 … |
@@ -27,7 +27,7 @@ dsh-pet은 UI 로케일을 zh / en / ja / es / fr / de / ru / pt만 지원합니
 
 ### 2. 설정 페이지 · 펫 대화 패널
 
-`pet.config` **218키**, `pet.chat` **50키** — 합계 **268개 문자열**이 한국어로 나옵니다.
+`pet.config` **233키**, `pet.chat` **50키** — 합계 **283개 문자열**이 한국어로 나옵니다.
 
 | 영역 | 전(영어로 폴백) | 후 |
 |---|---|---|
@@ -36,10 +36,13 @@ dsh-pet은 UI 로케일을 zh / en / ja / es / fr / de / ru / pt만 지원합니
 | 전역 스위치 | System notifications · Click sound · System tray | 시스템 알림 · 클릭음 · 시스템 트레이 |
 | 물리 · 글꼴 | Gravity · Bounciness · Font size (px) | 중력 · 반발력 · 글꼴 크기(px) |
 | 모델 설정 | Follow current conversation · Chat history rounds | 현재 대화 따르기 · 대화 기록 라운드 |
+| 음성 (0.4.7+) | Speak manual whispers · Speak work status · Speech recognition | 수동 혼잣말 읽기 · 작업 상태 읽기 · 음성 인식 |
+| 위치·날씨 (0.4.8+) | Location · City · Detect | 위치 · 도시 · 자동 감지 |
 | 대화 패널 | Say something… · Load earlier · Persona | 무슨 말이든 해보세요… · 이전 대화 불러오기 · 페르소나 |
 
-여기에 더해 `t()`를 우회하던 중문 9곳(아바타 업로드 오류, 테스트 알림 문구,
-CJK 구분자 `、`·`：` 등)도 한국어·한국어 구두점으로 바꿉니다.
+여기에 더해 `t()`를 우회하던 중문 15곳(아바타 업로드 오류, 테스트 알림 문구,
+CJK 구분자 `、`·`：`, 날씨 버블의 `体感`·`湿度`·`风速`·`观测` 등)도
+한국어·한국어 구두점으로 바꿉니다.
 
 ## 요구 사항
 
@@ -49,6 +52,13 @@ CJK 구분자 `、`·`：` 등)도 한국어·한국어 구두점으로 바꿉�
   (DSH 프로필의 로케일 목록에 `한국어`가 보이면 이미 된 상태입니다)
 
 패치는 `$DSH_HOME/profiles/desktop/node_modules/dsh-pet` 아래 파일 3개를 직접 수정합니다.
+
+### 지원 버전
+
+**dsh-pet 0.4.9** 기준으로 검증했습니다. 0.4.6~0.4.9에서 패치 앵커가 그대로 유지됩니다.
+0.4.5 이전은 사전 키가 적어(218키) 일부 항목만 번역됩니다.
+
+업데이트 후에는 `--check`가 `ANCHOR-MISS` 또는 `HARDCODED-MISS`를 내는지 먼저 확인하세요.
 
 ## 사용법
 
@@ -63,13 +73,17 @@ python verify_dsh_pet_ko.py           # 검증
 그 다음 펫을 재시작합니다.
 
 ```powershell
-Invoke-WebRequest -Uri http://127.0.0.1:13302/dsh-pet-7340/reload -Method Post
+Invoke-WebRequest -Uri http://127.0.0.1:$($env:DSH_WEB_URL -replace '.*:','')/dsh-pet-7340/reload -Method Post
 ```
 
 - **데스크톱 펫**: 위 `reload`로 즉시 반영
 - **웹 화면의 펫 · 설정 페이지**: 브라우저 **새로고침(F5)** 필요 (클라이언트 번들은 페이지 로드 시 내려감)
 
-> DSH 웹 포트가 13302가 아니면 `POST /dsh-pet-7340/reload`의 포트만 맞춰 주세요.
+> DSH 웹 포트는 실행할 때마다 바뀝니다. `$env:DSH_WEB_URL`에서 확인하거나,
+> DSH 창의 주소를 그대로 쓰세요. `verify_dsh_pet_ko.py`는 이 변수와 흔한 포트를 자동으로 훑습니다.
+>
+> 번들을 새로 읽히는 가장 확실한 방법은 **DSH 재시작**입니다. 업데이트 직후에는 위 `reload`가
+> 404를 낼 수 있습니다(구 번들이 메모리에 남아 있음).
 
 ### 확인 출력 예시
 
@@ -78,18 +92,18 @@ $ python patch_dsh_pet_ko.py --check
 client       WOULD-PATCH(label=2,hint=1)
 shared-core  WOULD-PATCH(label=2,hint=1)
 tray         WOULD-PATCH
-locale       WOULD-PATCH(ns=2,hardcoded=9)
+locale       WOULD-PATCH(ns=2,hardcoded=15)
 
 $ python verify_dsh_pet_ko.py
-client       175 entries
-shared-core  175 entries
-config source : live /dsh-pet-7340/config
-required names: 175
-translated    : 175
+client       176 entries
+shared-core  176 entries
+config source : http://127.0.0.1:<port>/dsh-pet-7340/config
+required names: 176
+translated    : 176
 missing       : 0
 values with Han: 0
 
-[locale] pet.config: 218 키 (누락 0, 초과 0, 한자 0, 플레이스홀더 0)
+[locale] pet.config: 233 키 (누락 0, 초과 0, 한자 0, 플레이스홀더 0)
 
 [locale] pet.chat: 50 키 (누락 0, 초과 0, 한자 0, 플레이스홀더 0)
 
@@ -157,6 +171,23 @@ const dicts$1 = {
 
 다른 언어 사전은 한 글자도 건드리지 않고, `t()` 호출 지점도 바꾸지 않습니다.
 폴백 체인은 `ko → en`이라 사전에 없는 키가 생겨도 영어로 안전하게 떨어집니다.
+
+### 그런데 사전에 없는 문자열
+
+dsh-pet은 일부 문구를 `t()`를 거치지 않고 코드에 직접 박아 둡니다.
+날씨 버블이 대표적입니다(`src/shared/env-view.ts`).
+
+```js
+label: "体感"                       // → label: "체감"
+{ footer: "观测 " + observed }       // → { footer: "관측 " + observed }
+```
+
+이런 문자열은 `patch_dsh_pet_ko.py`의 `HARDCODED` 목록에서 원문→번역으로 직접 치환합니다.
+각 항목은 번들에 **정확히 한 번만** 나타나야 하고(아니면 `HARDCODED-MISS`),
+`--revert` 시 원문으로 되돌립니다.
+
+현재 15곳을 다룹니다: 아바타 업로드 오류 3, 테스트 알림 2, CJK 구분자 3,
+목소리 선택 라벨 1, 날씨 버블 6.
 
 ## 말도 한국어로
 
