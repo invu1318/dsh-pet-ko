@@ -12,6 +12,11 @@ PET_ROOT = os.path.join(os.environ.get("DSH_HOME", os.path.expanduser(r"~\.dsh")
                         "profiles", "desktop", "node_modules", "dsh-pet")
 CLIENT = os.path.join(PET_ROOT, "lib", "client.js")
 SHARED = os.path.join(PET_ROOT, "runtime", "electron-helper", "shared-core.js")
+INDEX_JS = os.path.join(PET_ROOT, "lib", "index.js")
+WMO_MARKER = "__DSH_PET_KO_WMO__"
+# Open-Meteo current/daily가 쓰는 코드만 표에 있다
+WMO_EXPECTED = {0, 1, 2, 3, 45, 48, 51, 53, 55, 56, 57, 61, 63, 65, 66, 67,
+                71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99}
 def resolve_cfg_url():
     """DSH 웹 포트는 고정이 아니다. DSH_WEB_URL이 있으면 그걸 쓰고,
     없으면 흔한 포트를 훑어 /dsh-pet-7340/config 가 살아 있는 곳을 찾는다."""
@@ -137,6 +142,65 @@ def verify_locale():
     return problems
 
 
+def verify_weather(problems):
+    """날씨 문구·도시명 한국어화 검증."""
+    # 1. WMO 표: lib/index.js의 날씨 문구 28개
+    if not os.path.exists(INDEX_JS):
+        print("\n[weather] lib/index.js 없음"); return problems + 1
+    idx = io.open(INDEX_JS, encoding="utf-8").read()
+    if WMO_MARKER not in idx:
+        print("\n[weather] NOT PATCHED (WMO 표)"); return problems + 1
+    table = {}
+    begin = idx.find("const TEXT_BY_CODE = {")
+    if begin < 0:
+        print("\n[weather] TEXT_BY_CODE 표를 찾을 수 없음"); return problems + 1
+    end = idx.find("};", begin)
+    for m in re.finditer(r'\n\t(\d+): "([^"]*)"', idx[begin:end]):
+        table[int(m.group(1))] = m.group(2)
+    hanja = {c: v for c, v in table.items() if HAN.search(v)}
+    print("\n[weather] WMO 표 %d개 (중문 잔존 %d)" % (len(table), len(hanja)))
+    for c, v in list(hanja.items())[:5]:
+        print("   ! %s -> %s" % (c, v))
+    problems += len(hanja)
+    missing_codes = [c for c in range(0, 100) if c in WMO_EXPECTED and c not in table]
+    if missing_codes:
+        print("   - 빠진 코드: %s" % missing_codes)
+        problems += len(missing_codes)
+
+    # 2. env-view 라벨: 웹/데스크톱 두 번들 모두
+    for label, path in (("client", CLIENT), ("shared-core", SHARED)):
+        if not os.path.exists(path):
+            continue
+        body = io.open(path, encoding="utf-8").read()
+        begin = body.find("//#region src/shared/env-view.ts")
+        if begin < 0:
+            continue
+        end = body.find("//#endregion", begin)
+        seg = body[begin:end]
+        bad = [s for s in ("体感", "湿度", "风速", "暂时查不到天气", "观测 ")
+               if s in seg]
+        if bad:
+            print("\n[weather] %s env-view 중문 잔존: %s" % (label, ", ".join(bad)))
+            problems += len(bad)
+        else:
+            print("[weather] %s env-view 라벨 OK" % label)
+
+    # 3. 도시명: IP 좌표 → 한국어 역지오코딩, geocode는 ko 우선 → zh 폴백
+    checks = (("IP 좌표 요청", "country,lat,lon"),
+              ("역지오코딩", "koreanPlaceName"),
+              ("역지오코딩 URL", "REVERSE_GEO_URL"),
+              ("제목 중문 제거", "shownRegion"),
+              ("ko geocode", "GEOCODE_URL_KO"),
+              ("zh 폴백", "await fetchJson(GEOCODE_URL +"))
+    for name, needle in checks:
+        if needle not in idx:
+            print("[weather] 도시명 패치 누락: %s" % name)
+            problems += 1
+    if all(n in idx for _x, n in checks):
+        print("[weather] 도시명 OK (IP 좌표 → 역지오코딩 ko, geocode ko→zh 폴백)")
+    return problems
+
+
 def load_local_config():
     """번들 기본 설정(assets/config.jsonc)에서 이름 목록을 읽는다.
 
@@ -194,9 +258,10 @@ def main():
     for k, v in dirty: print("   ! %s -> %s" % (k, v))
 
     locale_problems = verify_locale()
+    weather_problems = verify_weather(locale_problems)
 
-    ok = not missing and not dirty and locale_problems == 0
-    print("\nRESULT:", "OK — 메뉴 라벨과 설정·대화 UI가 모두 한국어입니다"
+    ok = not missing and not dirty and weather_problems == 0
+    print("\nRESULT:", "OK — 메뉴·설정·대화 UI·날씨가 모두 한국어입니다"
           if ok else "확인 필요")
     return 0 if ok else 1
 

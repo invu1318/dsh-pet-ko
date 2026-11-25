@@ -44,6 +44,18 @@ dsh-pet은 UI 로케일을 zh / en / ja / es / fr / de / ru / pt만 지원합니
 CJK 구분자 `、`·`：`, 날씨 버블의 `体感`·`湿度`·`风速`·`观测` 등)도
 한국어·한국어 구두점으로 바꿉니다.
 
+### 3. 날씨
+
+「날씨 조회」를 눌렀을 때 뜨는 버블 전체가 한국어가 됩니다.
+사전에도 `t()`에도 잡히지 않는 곳이라 별도 처리가 필요했습니다 — [자세히](#날씨는-세-곳을-따로-고쳐야-했다).
+
+| 영역 | 전 | 후 |
+|---|---|---|
+| 날씨 문구 28종 | 晴 · 多云 · 小雨 · 雷阵雨 | 맑음 · 구름 조금 · 약한 비 · 뇌우 |
+| 버블 라벨 | 体感 · 湿度 · 风速 · 观测 08:45 | 체감 · 습도 · 풍속 · 관측 08:45 |
+| 도시명 | 首尔特别市 · 韩国 | 서울특별시 |
+| 조회 실패 | 暂时查不到天气 | 이번엔 날씨를 찾지 못했어요 |
+
 ## 요구 사항
 
 - Python 3.8+
@@ -93,13 +105,16 @@ client       WOULD-PATCH(label=2,hint=1)
 shared-core  WOULD-PATCH(label=2,hint=1)
 tray         WOULD-PATCH
 locale       WOULD-PATCH(ns=2,hardcoded=15)
+helper       WOULD-PATCH(ns=0,hardcoded=6)
+weather      WOULD-PATCH(codes=28)
+city         WOULD-PATCH
 
 $ python verify_dsh_pet_ko.py
 client       176 entries
 shared-core  176 entries
-config source : http://127.0.0.1:<port>/dsh-pet-7340/config
-required names: 176
-translated    : 176
+config source : bundled assets/config.jsonc
+required names: 175
+translated    : 175
 missing       : 0
 values with Han: 0
 
@@ -107,7 +122,12 @@ values with Han: 0
 
 [locale] pet.chat: 50 키 (누락 0, 초과 0, 한자 0, 플레이스홀더 0)
 
-RESULT: OK — 메뉴 라벨과 설정·대화 UI가 모두 한국어입니다
+[weather] WMO 표 28개 (중문 잔존 0)
+[weather] client env-view 라벨 OK
+[weather] shared-core env-view 라벨 OK
+[weather] 도시명 OK (IP 좌표 → 역지오코딩 ko, geocode ko→zh 폴백)
+
+RESULT: OK — 메뉴·설정·대화 UI·날씨가 모두 한국어입니다
 ```
 
 ### 되돌리기
@@ -116,9 +136,11 @@ RESULT: OK — 메뉴 라벨과 설정·대화 UI가 모두 한국어입니다
 python patch_dsh_pet_ko.py --revert
 ```
 
-두 패치 모두 마커 블록(`__DSH_PET_KO__`, `// ---- dsh-pet ko locale patch`)을 주입하는
-방식이라, 원복은 그 블록 제거로 끝납니다. 로케일 패치만 되돌리면 파일이 **바이트 단위로**
-원본과 일치하는 것을 확인했습니다. dsh-pet을 재설치해도 원래대로 돌아갑니다.
+패치는 모두 마커(`__DSH_PET_KO__`, `// ---- dsh-pet ko locale patch`,
+`__DSH_PET_KO_WMO__`, `[dsh-pet-ko]`)를 남기므로 원복이 그 흔적을 지우는 방식으로 동작합니다.
+로케일 패치만 되돌리면 파일이 **바이트 단위로** 원본과 일치하는 것을 확인했습니다.
+`--revert` 뒤 `--check`는 전 항목이 `WOULD-PATCH`로 돌아와야 정상입니다.
+dsh-pet을 재설치해도 원래대로 돌아갑니다.
 
 ## 어떻게 동작하나
 
@@ -175,7 +197,8 @@ const dicts$1 = {
 ### 그런데 사전에 없는 문자열
 
 dsh-pet은 일부 문구를 `t()`를 거치지 않고 코드에 직접 박아 둡니다.
-날씨 버블이 대표적입니다(`src/shared/env-view.ts`).
+날씨 버블이 대표적입니다(`src/shared/env-view.ts`, 그리고 같은 코드가
+데스크톱 헬퍼 `shared-core.js`에도 중복돼 있습니다).
 
 ```js
 label: "体感"                       // → label: "체감"
@@ -183,11 +206,42 @@ label: "体感"                       // → label: "체감"
 ```
 
 이런 문자열은 `patch_dsh_pet_ko.py`의 `HARDCODED` 목록에서 원문→번역으로 직접 치환합니다.
-각 항목은 번들에 **정확히 한 번만** 나타나야 하고(아니면 `HARDCODED-MISS`),
+각 항목은 번들에 **정확히 한 번만** 나타나야 하고(아니면 `HARDCODED-AMBIGUOUS`),
 `--revert` 시 원문으로 되돌립니다.
 
 현재 15곳을 다룹니다: 아바타 업로드 오류 3, 테스트 알림 2, CJK 구분자 3,
 목소리 선택 라벨 1, 날씨 버블 6.
+
+### 날씨는 세 곳을 따로 고쳐야 했다
+
+날씨 버블이 중국어로 나오던 원인은 한 군데가 아니었습니다.
+
+| 무엇 | 어디 | 왜 |
+|---|---|---|
+| `晴`·`多云`·`小雨` … 28종 | `lib/index.js`의 WMO 표 | 서버가 날씨 코드를 **중국어 문구로 바꿔서** 내려보냄 |
+| `体感`·`湿度`·`风速`·`观测` | `env-view.ts` (웹·헬퍼 **양쪽**) | 하드코딩. 한쪽만 고치면 데스크톱 펫에서 계속 중문 |
+| `首尔特别市`·`韩国` | IP 위치 API (`?lang=zh-CN`) | 도시명을 중국어로 받아 그대로 버블 제목에 씀 |
+
+도시명은 이렇게 해결합니다.
+
+1. IP API에 `lat`·`lon`도 함께 요청
+2. 그 좌표로 **한국어 역지오코딩**(BigDataCloud, `localityLanguage=ko`) — `서울특별시`
+3. 도시명 검색(Open-Meteo)은 `language=ko`를 먼저, 실패하면 기존 `zh`로 폴백
+   (`ko`는 `Seoul`·`부산`·`Tokyo`에 강하고, `北京` 같은 중국어 입력에 약하다)
+4. 역지오코딩이 실패하면 중문 `region`을 **표시에서 뺀다** — 중문이 제목에 붙지 않게
+
+확인은 이렇게 합니다(DSH 인증 없이 날씨 경로만 실행):
+
+```powershell
+node check_weather_ko.mjs
+```
+
+```
+버블 제목: 서울특별시   OK
+날씨 버블: { 제목: '서울특별시', 요약: '대체로 맑음', 기온: '5.3°C',
+             체감: '2.6°C', 습도: '80%', 풍속: '6.5 km/h' }
+RESULT: OK — 날씨 버블이 전부 한국어입니다
+```
 
 ## 말도 한국어로
 
@@ -216,7 +270,12 @@ label: "体感"                       // → label: "체감"
 
 - **업데이트하면 패치가 사라집니다.** dsh-pet을 업데이트/재설치하면 파일이 교체되므로 `patch_dsh_pet_ko.py`를 다시 실행하세요. `--check`로 상태 확인 가능.
 - **짤 이미지 안의 글자는 여전히 중국어**입니다. 그림 파일이라 번역 대상이 아닙니다.
-- 패치 후 dsh-pet 내부 구조가 바뀌면 `ANCHOR-MISS` / `HARDCODED-MISS`가 날 수 있습니다. 그때는 `--check` 출력을 보고 이슈로 알려 주세요.
+- **날씨는 외부 API 3곳에 의존합니다** — `ip-api.com`(위치), `bigdatacloud.net`(한국어 지명),
+  `open-meteo.com`(날씨). 어디든 막히면 해당 부분만 원래 동작(중문/영문 지명)으로 돌아갑니다.
+- **아직 중문인 영역이 남아 있습니다** — 할 일 패널, 「吃白饭」 미니게임 대사,
+  음성 입력 안내, 잔액 버블, 시스템 알림 문구. `HARDCODED` 목록에 추가하면 같은 방식으로 번역됩니다.
+- 패치 후 dsh-pet 내부 구조가 바뀌면 `ANCHOR-MISS` / `HARDCODED-AMBIGUOUS` / `WMO-MISS` /
+  `GEO-ANCHOR-MISS`가 날 수 있습니다. 그때는 `--check` 출력을 보고 이슈로 알려 주세요.
 - **비공식 패치**입니다. dsh-pet 원저작자와 무관하며, 문제는 이 저장소로 주세요.
 
 ## 크레딧
